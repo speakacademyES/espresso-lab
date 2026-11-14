@@ -150,9 +150,9 @@ mesh(box(1.9, 0.05, 0.78), wood, 0, T - 0.025, -0.7, tableG);
 });
 
 /* ---------------------------------------------------------- interactables */
-const interactables = [];
-function reg(id, obj, ui) {
-  obj.userData.id = id; obj.userData.ui = !!ui; obj.userData.meshes = [];
+const interactables = [], byId = {};
+function reg(id, obj, ui, grab) {
+  obj.userData.id = id; obj.userData.ui = !!ui; obj.userData.grab = !!grab; obj.userData.meshes = []; byId[id] = obj;
   if (!ui) obj.traverse(function (o) {
     if (o.isMesh) { o.material = o.material.clone(); obj.userData.meshes.push(o); }
   });
@@ -194,7 +194,7 @@ mesh(cyl(0.055, 0.055, 0.006, 24), M(0xbfd8e0, { transparent: true, opacity: 0.4
 mesh(cyl(0.058, 0.058, 0.01, 24), M(0x2a2a2a), 0, 0.078, 0, jar).visible = false; // (lid left off)
 jar.add(beanCloud(55, 0.045, -0.07, 0.015, 7));
 addLabel(jar, 'coffee beans', 0, 0.13, 0);
-reg('jar', jar);
+reg('jar', jar, false, true);
 
 /* ---------------------------------------------------------------- grinder */
 const grinder = new THREE.Group(); grinder.position.set(GX, T, GZ); scene.add(grinder);
@@ -273,7 +273,7 @@ const mound = mesh(new THREE.SphereGeometry(0.03, 16, 10), M(0x4a2a16, { roughne
 mound.scale.set(1, 0.45, 1);
 grounds.visible = false; mound.visible = false;
 addLabel(pf, 'portafilter', 0.1, 0.07, 0.15);
-reg('pf', pf);
+reg('pf', pf, false, true);
 
 /* ----------------------------------------------------- tamper + tamp mat */
 const mat = new THREE.Group(); mat.position.set(PF_MAT.x, T, PF_MAT.z); scene.add(mat);
@@ -284,7 +284,7 @@ mesh(cyl(0.029, 0.029, 0.012, 24), silver, 0, 0.006, 0, tamper);
 mesh(cyl(0.011, 0.014, 0.05, 16), silver, 0, 0.037, 0, tamper);
 mesh(new THREE.SphereGeometry(0.024, 18, 12), M(0x2c1f16, { roughness: 0.6 }), 0, 0.075, 0, tamper).scale.set(1, 0.8, 1);
 addLabel(tamper, 'tamper', 0, 0.14, 0);
-reg('tamper', tamper);
+reg('tamper', tamper, false, true);
 
 /* -------------------------------------------------------------- cup + fx */
 mesh(cyl(0.07, 0.065, 0.006, 28), M(0xf2efe8, { roughness: 0.4 }), CUP_REST.x, T + 0.003, CUP_REST.z, scene); // saucer
@@ -299,7 +299,7 @@ const crema = mesh(new THREE.CircleGeometry(0.031, 24), M(0xc28a4c, { roughness:
 crema.rotation.x = -Math.PI / 2;
 liquid.visible = false; crema.visible = false;
 addLabel(cup, 'cup', -0.075, 0.09, 0.08);
-reg('cup', cup);
+reg('cup', cup, false, true);
 
 const stream = new THREE.Mesh((function () { const g = cyl(0.003, 0.003, 1, 8); g.translate(0, -0.5, 0); return g; })(), M(0x3b1d0b, { roughness: 0.3 }));
 stream.position.set(PF_LOCK.x, T + 0.135, PF_LOCK.z); stream.visible = false; scene.add(stream);
@@ -315,10 +315,13 @@ for (let i = 0; i < 7; i++) {
   s.visible = false; scene.add(s); steam.push(s);
 }
 
+const marker = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.004, 8, 40), new THREE.MeshBasicMaterial({ color: 0x33ff88, transparent: true, opacity: 0.7, depthTest: false }));
+marker.rotation.x = Math.PI / 2; marker.renderOrder = 9; marker.visible = false; scene.add(marker);
+
 /* ---------------------------------------------------------- panel + UI */
 const STEPS = [];
 const S = { mode: 'menu', step: 0, mistakes: 0, msg: '', msgCol: '#ffb38a', msgUntil: 0, busy: false, holding: false,
-            grind: 0, brewing: false, brewT: 0, shot: null, voice: true, stars: 0, dirty: true, steamOn: false, gaugeV: 0 };
+            grind: 0, brewing: false, brewT: 0, shot: null, voice: true, stars: 0, dirty: true, steamOn: false, gaugeV: 0, poured: false, pourT: 0, tamped: false };
 
 function drawPanel(g, w, h) {
   const grd = g.createLinearGradient(0, 0, 0, h); grd.addColorStop(0, '#2c231b'); grd.addColorStop(1, '#17120e');
@@ -335,10 +338,12 @@ function drawPanel(g, w, h) {
   if (S.mode === 'menu') {
     g.fillStyle = white; g.font = '700 66px system-ui,Arial,sans-serif'; g.fillText('Welcome, barista!', 40, 160);
     g.fillStyle = soft; g.font = '500 38px system-ui,Arial,sans-serif';
-    let y = wrap(g, 'Learn to make a real espresso, step by step.', 40, 230, w - 80, 50);
-    y = wrap(g, 'GUIDED: hints and new English words.   TEST: no help at all.', 40, y + 8, w - 80, 50);
-    g.fillStyle = '#e8b86d'; g.font = '600 34px system-ui,Arial,sans-serif';
-    wrap(g, 'Point at a button below and pull the trigger.', 40, y + 24, w - 80, 46);
+    g.font = '500 34px system-ui,Arial,sans-serif';
+    let y = wrap(g, 'Learn to make a real espresso, step by step.', 40, 214, w - 80, 44);
+    y = wrap(g, 'GUIDED: hints and new English words.   TEST: no help.', 40, y + 4, w - 80, 44);
+    y = wrap(g, 'GRAB things with the side grip button. PRESS buttons with the trigger.', 40, y + 4, w - 80, 44);
+    g.fillStyle = '#e8b86d'; g.font = '600 32px system-ui,Arial,sans-serif';
+    wrap(g, 'Point at a button below and pull the trigger.', 40, y + 14, w - 80, 44);
   } else if (guided && S.step < STEPS.length) {
     const st = STEPS[S.step];
     g.fillStyle = white; g.font = '700 50px system-ui,Arial,sans-serif'; g.fillText((S.step + 1) + '. ' + st.title, 40, 142);
@@ -484,105 +489,236 @@ function finishGame() {
   tone(660, 0.15); setTimeout(() => tone(880, 0.15), 150); setTimeout(() => tone(1175, 0.3), 300);
 }
 
+/* --------------------------------------------------------------- grabbing */
+const held = [null, null, null];            // controller 0, controller 1, mouse
+const tp = new THREE.Vector3(), tq = new THREE.Quaternion(), ts = new THREE.Vector3();
+const PF_LOCK_IN = V(PF_LOCK.x, PF_LOCK.y - 0.04, PF_LOCK.z);
+const grabbables = ['pf', 'jar', 'tamper', 'cup'];
+const GR = {
+  pf:     { r: 0.17, c: V(0, 0, 0.08), off: V(0, -0.01, -0.12), restY: T + 0.03 },
+  jar:    { r: 0.12, c: V(0, 0, 0),    off: V(0, 0, -0.12),     restY: T + 0.075 },
+  tamper: { r: 0.10, c: V(0, 0.04, 0), off: V(0, -0.075, -0.1), restY: T },
+  cup:    { r: 0.10, c: V(0, 0.03, 0), off: V(0, -0.03, -0.1),  restY: T + 0.006 }
+};
+grabbables.forEach(function (id) { byId[id].userData.gr = GR[id]; });
+const TABLE = { x0: -0.92, x1: 0.92, z0: -1.07, z1: -0.35 };
+
+function active() { return S.mode === 'guided' || S.mode === 'test'; }
+function d3(a, b) { return a.distanceTo(b); }
+function dxz(a, b) { return Math.hypot(a.x - b.x, a.z - b.z); }
+function isHeld(o) { return held[0] && held[0].obj === o || held[1] && held[1].obj === o || held[2] && held[2].obj === o; }
+function haptic(i, v, ms) {
+  try {
+    const c = ctrl[i], src = c && c.userData.src;
+    if (src && src.gamepad && src.gamepad.hapticActuators && src.gamepad.hapticActuators[0]) src.gamepad.hapticActuators[0].pulse(v, ms);
+  } catch (e) {}
+}
+function onTable(p) { return p.x > TABLE.x0 && p.x < TABLE.x1 && p.z > TABLE.z0 && p.z < TABLE.z1 && p.y > T - 0.05; }
+function inBox(p, x0, x1, z0, z1) { return p.x > x0 && p.x < x1 && p.z > z0 && p.z < z1; }
+function blockedSpot(p) {
+  return inBox(p, GX - 0.12, GX + 0.12, GZ - 0.12, GZ + 0.12) || inBox(p, MX - 0.22, MX + 0.22, MZ - 0.14, MZ + 0.2);
+}
+
+function canGrab(o) {
+  const u = o.userData, id = u.id;
+  if (u.busy) return false;
+  if (id === 'pf') {
+    if (S.holding) return false;
+    if (active() && u.loc === 'machine' && S.step >= 6 && S.step <= 8) { flash('It is locked in. Finish the shot first.', 1800, '#ffe08a'); return false; }
+  }
+  if (id === 'cup' && active() && u.loc === 'tray' && S.step >= 7 && S.step <= 8) { flash('Wait until the shot is finished.', 1800, '#ffe08a'); return false; }
+  return true;
+}
+function grab(slot, o, via, ray) {
+  if (!canGrab(o)) return false;
+  for (let k = 0; k < 3; k++) if (held[k] && held[k].obj === o) held[k] = null;
+  const u = o.userData;
+  if (!u.held) { u.lastRest = o.position.clone(); u.prevLoc = u.loc; }
+  u.held = true; u.loc = 'free';
+  const h = { obj: o, via: via, off: new THREE.Vector3(), tgt: null, dist: 0, fixed: null };
+  if (slot < 2) {
+    ctrl[slot].matrixWorld.decompose(tp, tq, ts);
+    h.off.copy(o.position).sub(tp).applyQuaternion(tq.clone().invert());
+    if (ray) h.tgt = u.gr.off.clone();
+  } else h.dist = camera.position.distanceTo(o.position);
+  held[slot] = h; haptic(slot, 0.45, 40); tone(520, 0.05, 'sine', 0.08);
+  return true;
+}
+function grabNearest(i) {
+  ctrl[i].matrixWorld.decompose(tp, tq, ts);
+  let best = null, bd = 1e9;
+  grabbables.forEach(function (id) {
+    const o = byId[id], gr = o.userData.gr;
+    const cen = gr.c.clone().applyQuaternion(o.quaternion).add(o.position), d = cen.distanceTo(tp);
+    if (d < gr.r && d < bd) { bd = d; best = o; }
+  });
+  if (best) { grab(i, best, 'squeeze', false); return; }
+  const h = hover[i];
+  if (h && byId[h.id].userData.grab) grab(i, byId[h.id], 'squeeze', true);
+}
+function release(slot) {
+  const h = held[slot]; if (!h) return;
+  held[slot] = null; haptic(slot, 0.2, 30); handleDrop(h.obj);
+}
+
+async function snapPose(o, pos, ry, dur) {
+  const p0 = o.position.clone(), r0 = o.rotation.y, z0 = o.rotation.z;
+  await tween(dur || 0.3, function (k) { const e = ease(k); o.position.lerpVectors(p0, pos, e); o.rotation.y = r0 + (ry - r0) * e; o.rotation.z = z0 * (1 - e); });
+}
+async function dropToTable(o) {
+  const u = o.userData, y1 = u.gr.restY, p0 = o.position.clone(), r0 = o.rotation.y, z0 = o.rotation.z;
+  const dur = Math.max(0.1, Math.min(0.45, Math.sqrt(2 * Math.abs(p0.y - y1) / 9.8)));
+  await tween(dur, function (k) { o.position.set(p0.x, p0.y + (y1 - p0.y) * k * k, p0.z); o.rotation.y = r0 * (1 - k); o.rotation.z = z0 * (1 - k); });
+  u.loc = 'free'; u.lastRest = o.position.clone();
+  if (Math.abs(p0.y - y1) > 0.04) thud();
+}
+async function returnRest(o) {
+  const u = o.userData, p0 = o.position.clone(), p1 = u.lastRest.clone(), r0 = o.rotation.y, z0 = o.rotation.z;
+  await tween(0.6, function (k) { const e = ease(k); o.position.lerpVectors(p0, p1, e); o.position.y += 0.1 * Math.sin(Math.PI * e); o.rotation.y = r0 * (1 - e); o.rotation.z = z0 * (1 - e); });
+  u.loc = u.prevLoc || 'free';
+}
+
+const ZONES = {
+  pf: [
+    { loc: 'grinder', pos: PF_GRIND, r: 0.12, step: 0, solid: true,
+      snap: async function (o) { await snapPose(o, PF_GRIND, 0, 0.3); thud(); } },
+    { loc: 'mat', pos: PF_MAT, r: 0.10, step: 3, solid: false, ok: function () { return S.grind >= 1; },
+      snap: async function (o) { await snapPose(o, PF_MAT, 0, 0.3); thud(); } },
+    { loc: 'machine', pos: PF_LOCK_IN, r: 0.11, step: 5, solid: true, ok: function () { return S.tamped; },
+      snap: async function (o) {
+        await snapPose(o, PF_LOCK_IN, 0.9, 0.3);
+        await tween(0.3, function (k) { o.position.y = PF_LOCK_IN.y + 0.04 * ease(k); });
+        await tween(0.4, function (k) { o.rotation.y = 0.9 * (1 - ease(k)); });
+        thud();
+      } }
+  ],
+  cup: [
+    { loc: 'tray', pos: CUP_TRAY, r: 0.09, xz: true, step: 6, solid: true,
+      snap: async function (o) { await snapPose(o, CUP_TRAY, 0, 0.3); } },
+    { loc: 'saucer', pos: CUP_REST, r: 0.11, xz: true, step: 9, solid: false, finish: true,
+      snap: async function (o) { await snapPose(o, CUP_REST, 0, 0.3); } }
+  ]
+};
+const ZMARK = {
+  0: { p: PF_GRIND, r: 0.05 },
+  1: { p: JAR_POUR, r: 0.07 },
+  3: { p: PF_MAT, r: 0.05 },
+  4: { p: V(PF_MAT.x, T + 0.075, PF_MAT.z), r: 0.04 },
+  5: { p: PF_LOCK_IN, r: 0.05 },
+  6: { p: V(CUP_TRAY.x, CUP_TRAY.y + 0.01, CUP_TRAY.z), r: 0.05 },
+  9: { p: V(CUP_REST.x, CUP_REST.y + 0.01, CUP_REST.z), r: 0.06 }
+};
+
+async function handleDrop(o) {
+  const u = o.userData; u.held = false; u.busy = true;
+  try {
+    const p = o.position.clone();
+    if (active()) {
+      const zs = ZONES[u.id] || [];
+      for (let i = 0; i < zs.length; i++) {
+        const z = zs[i];
+        if ((z.xz ? dxz(p, z.pos) : d3(p, z.pos)) > z.r) continue;
+        if (z.xz && (p.y < T - 0.03 || p.y > T + 0.32)) continue;
+        if (z.step === S.step && (!z.ok || z.ok())) {
+          await z.snap(o); u.loc = z.loc; u.lastRest = o.position.clone();
+          if (z.finish) finishGame(); else advance();
+          return;
+        }
+        if (z.loc === u.prevLoc) { await z.snap(o); u.loc = z.loc; return; }
+        if (z.solid) {
+          S.mistakes++; beepBad(); S.dirty = true;
+          flash(S.mode === 'guided' ? 'Not yet. Follow the green ring.' : 'Not yet - think about the order!', 2200);
+          await returnRest(o); return;
+        }
+      }
+    }
+    if (!onTable(p) || blockedSpot(p)) { await returnRest(o); return; }
+    await dropToTable(o);
+  } finally { u.busy = false; }
+}
+async function doTamp() {
+  await tween(0.35, function (k) {
+    const e = ease(k), f = 1 - 0.25 * e;
+    grounds.scale.y = f; grounds.position.y = -0.005 + 0.01 * f; mound.scale.set(1 - e, 0.45 * (1 - e), 1 - e);
+  });
+  mound.visible = false; groundsMat.color.setHex(0x2c180c); thud(); haptic(0, 0.8, 80); haptic(1, 0.8, 80);
+  advance();
+}
+
 STEPS.push(
-  { id: 'pf', title: 'Portafilter under the grinder', text: 'Point at the portafilter and pull the trigger. It goes under the grinder.', say: 'Step one. Put the portafilter under the grinder.', vocab: ['portafilter', 'grinder'],
-    run: async function () { await moveTo(pf, PF_GRIND, 0, 0.9, 0.12); advance(); } },
-  { id: 'jar', title: 'Add the coffee beans', text: 'Pick up the jar of coffee beans and pour the beans into the hopper.', say: 'Step two. Pour the coffee beans into the hopper.', vocab: ['coffee beans', 'hopper', 'pour'],
-    run: async function () {
-      const p0 = jar.position.clone();
-      await moveTo(jar, JAR_POUR, 0, 1.0, 0.1);
-      const z0 = jar.rotation.z; await tween(0.8, function (k) { jar.rotation.z = z0 + 2.0 * ease(k); });
-      hopBeans.visible = true;
-      await tween(0.9, function (k) { hopBeans.scale.setScalar(Math.max(0.001, ease(k))); });
-      await sleep(0.3);
-      await tween(0.6, function (k) { jar.rotation.z = 2.0 * (1 - ease(k)); });
-      await moveTo(jar, p0, 0, 0.9, 0.1); advance();
-    } },
-  { id: 'grindBtn', title: 'Grind the coffee', text: 'Press and HOLD the green button. Keep holding until the coffee is ground.', say: 'Step three. Hold the green button to grind the coffee.', vocab: ['grind', 'ground coffee', 'hold'], run: null },
-  { id: 'pf', title: 'Move to the tamping mat', text: 'Take the portafilter out of the grinder. Put it on the tamping mat.', say: 'Step four. Put the portafilter on the tamping mat.', vocab: ['tamping mat', 'take out'],
-    run: async function () { await moveTo(pf, PF_MAT, 0, 0.9, 0.12); advance(); } },
-  { id: 'tamper', title: 'Tamp the coffee', text: 'Press the coffee flat and firm with the tamper. Push straight down.', say: 'Step five. Tamp the coffee. Press it flat.', vocab: ['tamper', 'press', 'flat'],
-    run: async function () {
-      const hover = V(PF_MAT.x, T + 0.13, PF_MAT.z);
-      await moveTo(tamper, hover, 0, 0.8, 0.08);
-      await tween(0.6, function (k) {
-        const e = ease(k); tamper.position.y = T + 0.13 - (0.13 - 0.046) * e;
-        const f = 1 - 0.25 * e; grounds.scale.y = f; grounds.position.y = -0.005 + 0.01 * f;
-        mound.scale.set(1 - e, 0.45 * (1 - e), 1 - e);
-      });
-      mound.visible = false; groundsMat.color.setHex(0x2c180c); thud();
-      await tween(0.5, function (k) { tamper.rotation.y = Math.PI * ease(k); });
-      await moveTo(tamper, TAMP_REST, 0, 0.8, 0.08); advance();
-    } },
-  { id: 'pf', title: 'Lock it in', text: 'Put the portafilter in the group head. Turn it to lock it.', say: 'Step six. Lock the portafilter into the group head.', vocab: ['group head', 'lock', 'turn'],
-    run: async function () {
-      const low = V(PF_LOCK.x, PF_LOCK.y - 0.05, PF_LOCK.z);
-      await moveTo(pf, low, 0.9, 1.0, 0.12);
-      await tween(0.4, function (k) { pf.position.y = low.y + 0.05 * ease(k); });
-      await tween(0.5, function (k) { pf.rotation.y = 0.9 * (1 - ease(k)); });
-      thud(); advance();
-    } },
-  { id: 'cup', title: 'Place the cup', text: 'Put the cup under the spout. Careful, the machine is hot!', say: 'Step seven. Put the cup under the spout. Careful, it is hot.', vocab: ['cup', 'spout', 'hot'],
-    run: async function () { await moveTo(cup, CUP_TRAY, 0, 0.9, 0.1); advance(); } },
-  { id: 'brewBtn', title: 'Start the shot', text: 'Press the red button to start. Watch the shot timer on the machine.', say: 'Step eight. Press the red button to start the shot.', vocab: ['brew', 'shot', 'pressure'],
+  { id: 'pf', kind: 'grab', title: 'Portafilter under the grinder', text: 'Squeeze the grip button to grab the portafilter. Hold it in the green ring under the grinder and let go.', say: 'Step one. Grab the portafilter and put it under the grinder.', vocab: ['portafilter', 'grinder', 'grab'] },
+  { id: 'jar', kind: 'grab', title: 'Add the coffee beans', text: 'Grab the jar of beans. Hold it over the hopper, in the green ring. It tips by itself.', say: 'Step two. Grab the jar and pour the beans into the hopper.', vocab: ['coffee beans', 'hopper', 'pour'] },
+  { id: 'grindBtn', kind: 'press', title: 'Grind the coffee', text: 'Point at the green button. Press and HOLD the trigger until the coffee is ground.', say: 'Step three. Hold the trigger on the green button to grind the coffee.', vocab: ['grind', 'ground coffee', 'hold'], run: null },
+  { id: 'pf', kind: 'grab', title: 'Move to the tamping mat', text: 'Take the portafilter out of the grinder. Put it on the tamping mat.', say: 'Step four. Put the portafilter on the tamping mat.', vocab: ['tamping mat', 'take out'] },
+  { id: 'tamper', kind: 'grab', title: 'Tamp the coffee', text: 'Grab the tamper. Press it straight down on the coffee. Push firmly!', say: 'Step five. Tamp the coffee. Press it flat.', vocab: ['tamper', 'press', 'flat'] },
+  { id: 'pf', kind: 'grab', title: 'Lock it in', text: 'Lift the portafilter up into the group head, then let go. It turns and locks.', say: 'Step six. Lift the portafilter into the group head.', vocab: ['group head', 'lock', 'lift'] },
+  { id: 'cup', kind: 'grab', title: 'Place the cup', text: 'Grab the cup. Put it on the tray under the spout. Careful, the machine is hot!', say: 'Step seven. Put the cup under the spout. Careful, it is hot.', vocab: ['cup', 'spout', 'hot'] },
+  { id: 'brewBtn', kind: 'press', title: 'Start the shot', text: 'Point at the red button and pull the trigger. Watch the shot timer.', say: 'Step eight. Press the red button to start the shot.', vocab: ['brew', 'shot', 'pressure'],
     run: async function () {
       S.brewing = true; S.brewT = 0; stream.visible = true; setG(brewG, 0.22); drawTimer(); advance();
       flash(S.mode === 'guided' ? 'Stop between 25 and 30 seconds!' : 'Brewing...', 2500, '#7dffb0');
     } },
-  { id: 'brewBtn', title: 'Stop at the right time', text: 'Press the red button again to STOP. The best time is 25 to 30 seconds.', say: 'Now stop the shot between twenty five and thirty seconds.', vocab: ['stop', 'seconds', 'extraction'],
+  { id: 'brewBtn', kind: 'press', title: 'Stop at the right time', text: 'Pull the trigger on the red button again to STOP. The best time is 25 to 30 seconds.', say: 'Now stop the shot between twenty five and thirty seconds.', vocab: ['stop', 'seconds', 'extraction'],
     run: async function () { finishShot(false); } },
-  { id: 'cup', title: 'Serve it!', text: 'Lift the cup and serve your espresso to the customer.', say: 'Last step. Serve your espresso.', vocab: ['serve', 'espresso', 'crema'],
-    run: async function () { await moveTo(cup, CUP_REST, 0, 1.1, 0.16); finishGame(); } }
+  { id: 'cup', kind: 'grab', title: 'Serve it!', text: 'Carry the cup to the saucer in the green ring and let go. Serve your espresso!', say: 'Last step. Carry the cup to the saucer and serve it.', vocab: ['serve', 'espresso', 'crema'] }
 );
 
 function resetScene() {
   tweens.length = 0;
+  for (let k = 0; k < 3; k++) held[k] = null;
   S.step = 0; S.mistakes = 0; S.busy = false; S.holding = false; S.grind = 0; S.brewing = false; S.brewT = 0; S.shot = null;
-  S.stars = 0; S.msg = ''; S.steamOn = false; S.gaugeV = 0;
+  S.stars = 0; S.msg = ''; S.steamOn = false; S.gaugeV = 0; S.poured = false; S.pourT = 0; S.tamped = false;
   jar.position.copy(JAR_REST); jar.rotation.set(0, 0, 0);
   hopBeans.visible = false; hopBeans.scale.setScalar(0.001);
   pf.position.copy(PF_REST); pf.rotation.set(0, 0, 0);
   tamper.position.copy(TAMP_REST); tamper.rotation.set(0, 0, 0);
   cup.position.copy(CUP_REST); cup.rotation.set(0, 0, 0);
+  grabbables.forEach(function (id) {
+    const o = byId[id], u = o.userData;
+    u.loc = 'free'; u.prevLoc = 'free'; u.busy = false; u.held = false; u.lastRest = o.position.clone();
+  });
   groundsMat.color.setHex(0x3a2112); setGrind(0); setCupFill(0);
-  stream.visible = false; steam.forEach(s => { s.visible = false; });
+  stream.visible = false; marker.visible = false; steam.forEach(function (sp) { sp.visible = false; });
   setG(grindG, 0); setG(brewG, 0); drawGauge(0); drawTimer();
   try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}
   S.dirty = true;
 }
 function startMode(m) {
   initAudio(); resetScene(); S.mode = m;
-  labels.forEach(l => { l.visible = (m === 'guided'); });
+  labels.forEach(function (l) { l.visible = (m === 'guided'); });
   if (m === 'guided') say(STEPS[0].say); else say('Test mode. Make an espresso without help.');
   S.dirty = true;
 }
 function currentTarget() {
-  return (S.mode === 'guided' || S.mode === 'test') && S.step < STEPS.length ? STEPS[S.step].id : null;
+  return active() && S.step < STEPS.length ? STEPS[S.step].id : null;
 }
 function uiButton(id) {
   if (id === 'btnGuided') startMode('guided');
   else if (id === 'btnTest') startMode('test');
-  else if (id === 'btnRestart') { resetScene(); S.mode = 'menu'; labels.forEach(l => { l.visible = false; }); S.dirty = true; }
+  else if (id === 'btnRestart') { resetScene(); S.mode = 'menu'; labels.forEach(function (l) { l.visible = false; }); S.dirty = true; }
   else if (id === 'btnVoice') { S.voice = !S.voice; if (!S.voice) { try { window.speechSynthesis.cancel(); } catch (e) {} } uiBtns.btnVoice.redraw(); }
 }
 async function onPress(id) {
   initAudio();
   if (id.indexOf('btn') === 0) { uiButton(id); return; }
-  if (S.busy || (S.mode !== 'guided' && S.mode !== 'test') || S.step >= STEPS.length) return;
+  if (!active() || S.busy || S.step >= STEPS.length) return;
   const st = STEPS[S.step];
-  if (id !== st.id) {
+  if (st.kind !== 'press' || id !== st.id) {
     S.mistakes++; beepBad();
     flash(S.mode === 'guided' ? 'Not that one. Follow the green glow.' : 'Not yet - think about the order!', 2200);
     return;
   }
-  if (id === 'grindBtn') { S.holding = true; return; }
+  if (id === 'grindBtn') {
+    if (!S.poured || pf.userData.loc !== 'grinder' || isHeld(pf)) { flash('Put the portafilter under the grinder and add the beans first.', 2600, '#ffe08a'); return; }
+    S.holding = true; return;
+  }
   S.busy = true;
   try { await st.run(); } finally { S.busy = false; }
 }
 function onRelease() {
   if (S.holding) {
     S.holding = false; setG(grindG, 0);
-    if (S.grind < 1 && S.mode === 'guided') flash('Keep holding the green button!', 1800, '#ffe08a');
+    if (S.grind < 1 && S.mode === 'guided') flash('Keep holding the trigger!', 1800, '#ffe08a');
   }
 }
 
@@ -604,8 +740,15 @@ for (let i = 0; i < 2; i++) {
   const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([V(0, 0, 0), V(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0xffd37a }));
   line.scale.z = 1.2; c.add(line); c.userData.line = line;
   const cur = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffd37a })); cur.visible = false; scene.add(cur); cursors.push(cur);
-  c.addEventListener('selectstart', function () { const h = hover[i]; if (h) onPress(h.id); else initAudio(); });
-  c.addEventListener('selectend', onRelease);
+  c.addEventListener('connected', function (e) { c.userData.src = e.data; });
+  c.addEventListener('selectstart', function () {
+    initAudio(); const h = hover[i]; if (!h) return;
+    const o = byId[h.id];
+    if (o.userData.grab) grab(i, o, 'select', true); else onPress(h.id);
+  });
+  c.addEventListener('selectend', function () { onRelease(); if (held[i] && held[i].via === 'select') release(i); });
+  c.addEventListener('squeezestart', function () { initAudio(); grabNearest(i); });
+  c.addEventListener('squeezeend', function () { if (held[i] && held[i].via === 'squeeze') release(i); });
 }
 // desktop mouse
 let orbit = { a: 0, e: 0.22, r: 1.75 }, drag = null, mouse = { x: 0, y: 0, in: false };
@@ -623,11 +766,15 @@ cv.addEventListener('pointermove', function (ev) {
 cv.addEventListener('pointerdown', function (ev) {
   if (renderer.xr.isPresenting) return; setMouse(ev);
   rc.setFromCamera(mouse, camera); const h = pick();
-  if (h) onPress(h.id); else { initAudio(); drag = { x: ev.clientX, y: ev.clientY }; }
+  if (h) { const o = byId[h.id]; if (o.userData.grab) grab(2, o, 'mouse', false); else onPress(h.id); } else { initAudio(); drag = { x: ev.clientX, y: ev.clientY }; }
 });
-window.addEventListener('pointerup', function () { drag = null; onRelease(); });
+window.addEventListener('pointerup', function () { drag = null; onRelease(); release(2); });
 cv.addEventListener('pointerleave', function () { mouse.in = false; });
-cv.addEventListener('wheel', function (ev) { ev.preventDefault(); orbit.r = Math.max(0.7, Math.min(2.2, orbit.r + ev.deltaY * 0.001)); }, { passive: false });
+cv.addEventListener('wheel', function (ev) {
+  ev.preventDefault();
+  if (held[2]) held[2].dist = Math.max(0.3, Math.min(4, held[2].dist + ev.deltaY * 0.001));
+  else orbit.r = Math.max(0.7, Math.min(2.2, orbit.r + ev.deltaY * 0.001));
+}, { passive: false });
 
 /* ------------------------------------------------------------- XR buttons */
 let xrMode = null;
@@ -687,6 +834,42 @@ function update(dt, t) {
     cv.style.cursor = hover[2] ? 'pointer' : (drag ? 'grabbing' : 'grab');
   }
 
+  // held objects follow the hand
+  for (let k = 0; k < 3; k++) {
+    const h = held[k]; if (!h) continue; const o = h.obj;
+    if (k < 2) {
+      const c = ctrl[k]; if (!c.visible) continue;
+      c.matrixWorld.decompose(tp, tq, ts);
+      if (h.tgt) h.off.lerp(h.tgt, Math.min(1, dt * 9));
+      o.position.copy(h.off).applyQuaternion(tq).add(tp);
+    } else {
+      rc.setFromCamera(mouse, camera);
+      o.position.copy(rc.ray.origin).addScaledVector(rc.ray.direction, h.dist);
+      if (h.fixed) o.position.copy(h.fixed);
+    }
+    o.rotation.y *= 1 - Math.min(1, dt * 8);
+  }
+
+  // pouring: tip the jar over the hopper
+  const jarHeld = isHeld(jar);
+  if (active() && S.step === 1 && !S.poured && jarHeld && d3(jar.position, JAR_POUR) < 0.16) {
+    S.pourT += dt; jar.rotation.z += (2.0 - jar.rotation.z) * Math.min(1, dt * 5);
+    if (S.pourT > 0.4) { hopBeans.visible = true; hopBeans.scale.setScalar(Math.max(0.001, Math.min(1, (S.pourT - 0.4) / 0.9))); }
+    if (S.pourT >= 1.3) { S.poured = true; hopBeans.scale.setScalar(1); haptic(0, 0.5, 60); haptic(1, 0.5, 60); advance(); }
+  } else {
+    if (!jar.userData.busy) jar.rotation.z += (0 - jar.rotation.z) * Math.min(1, dt * 6);
+    if (!S.poured && S.pourT > 0) {
+      S.pourT = Math.max(0, S.pourT - dt);
+      hopBeans.visible = S.pourT > 0.4; hopBeans.scale.setScalar(Math.max(0.001, Math.min(1, (S.pourT - 0.4) / 0.9)));
+    }
+  }
+
+  // tamping: press the held tamper down onto the coffee
+  if (active() && S.step === 4 && !S.tamped && isHeld(tamper) && pf.userData.loc === 'mat' && !pf.userData.busy &&
+      dxz(tamper.position, pf.position) < 0.04 && tamper.position.y < T + 0.058 && tamper.position.y > T) {
+    S.tamped = true; doTamp();
+  }
+
   // grinding
   const st = STEPS[S.step];
   const grindingNow = S.holding && st && st.id === 'grindBtn' && (S.mode === 'guided' || S.mode === 'test') && !S.busy;
@@ -720,16 +903,20 @@ function update(dt, t) {
     }
   }
 
-  // glow / hover
+  // glow / hover / zone ring
   const tid = currentTarget(), pulse = 0.25 + 0.25 * Math.sin(t * 5);
   for (let i = 0; i < interactables.length; i++) {
     const o = interactables[i], id = o.userData.id;
     const hov = hover[0] && hover[0].id === id || hover[1] && hover[1].id === id || hover[2] && hover[2].id === id;
     if (o.userData.ui) { o.scale.setScalar(hov ? 1.08 : 1); continue; }
-    if (hov) glow(o, gold, 0.55);
+    if (isHeld(o)) glow(o, 0xffffff, 0.22);
+    else if (hov) glow(o, gold, 0.55);
     else if (S.mode === 'guided' && !S.busy && tid === id) glow(o, green, pulse);
     else glow(o, 0, 0);
   }
+  const zf = (S.mode === 'guided' && !S.busy) ? ZMARK[S.step] : null;
+  if (zf) { marker.visible = true; marker.position.copy(zf.p); marker.scale.setScalar(zf.r / 0.05); marker.material.opacity = 0.45 + 0.35 * Math.sin(t * 5); }
+  else marker.visible = false;
 
   // panel + hud
   if (S.dirty) { S.dirty = false; panel.redraw(); syncHud(); }
@@ -752,7 +939,7 @@ window.addEventListener('resize', function () {
 });
 
 resetScene(); labels.forEach(l => { l.visible = false; });
-window.__espresso = { S: S, onPress: onPress, onRelease: onRelease, STEPS: STEPS, startMode: startMode };
+window.__espresso = { S: S, onPress: onPress, onRelease: onRelease, STEPS: STEPS, startMode: startMode, held: held, grab: grab, release: release, byId: byId, T: T, PF_GRIND: PF_GRIND, PF_MAT: PF_MAT, PF_LOCK_IN: PF_LOCK_IN, CUP_TRAY: CUP_TRAY, CUP_REST: CUP_REST, JAR_POUR: JAR_POUR };
 })();
 </script>
 </body>
