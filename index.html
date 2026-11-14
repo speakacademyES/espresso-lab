@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Espresso Lab - VR barista trainer</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  html,body{margin:0;height:100%;background:#14110f;color:#f3e9dc;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;overflow:hidden}
+  canvas{display:block}
+  #hud{position:fixed;left:12px;top:12px;width:min(350px,calc(100vw - 24px));box-sizing:border-box;background:rgba(24,19,15,.9);border:1px solid #6b5037;border-radius:14px;padding:12px 14px;z-index:5}
+  #hud h1{font-size:16px;margin:0 0 6px;color:#e8b86d;letter-spacing:.04em}
+  #hud p{margin:5px 0;font-size:14px;line-height:1.4}
+  #hudStep{font-weight:600;color:#fff}
+  #hud .row{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+  #hud button{background:#3a2c20;color:#f3e9dc;border:1px solid #7a5b3c;border-radius:9px;padding:8px 11px;font-size:13px;cursor:pointer}
+  #hud button:hover{background:#51392a}
+  #hud button.primary{background:#c98a43;color:#1b120a;border-color:#e8b86d;font-weight:700}
+  #note{color:#ffb38a;font-size:12.5px}
+  #hint{position:fixed;left:0;right:0;bottom:8px;text-align:center;font-size:12px;color:#8f7d69;pointer-events:none}
+</style>
+</head>
+<body>
+<div id="hud">
+  <h1>ESPRESSO LAB</h1>
+  <p id="hudStep">Choose a mode to start.</p>
+  <p id="hudText" style="color:#cdbba5"></p>
+  <div class="row">
+    <button class="primary" id="bGuided">Guided</button>
+    <button id="bTest">Test</button>
+    <button id="bRestart">Restart</button>
+  </div>
+  <div class="row">
+    <button id="bVR" style="display:none">Enter VR</button>
+    <button id="bAR" style="display:none">Mixed reality</button>
+  </div>
+  <p id="note"></p>
+</div>
+<div id="hint">Desktop preview: click objects, drag to look around, scroll to zoom. For the headset, open this page in the Meta Quest Browser.</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+'use strict';
+
+/* ------------------------------------------------------------------ setup */
+const T = 0.9; // table top height (m)
+const $ = id => document.getElementById(id);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.xr.setReferenceSpaceType('local-floor');
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x1b1612);
+scene.background = BG;
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.02, 50);
+
+scene.add(new THREE.HemisphereLight(0xfff1dd, 0x3a2c20, 0.85));
+const dl = new THREE.DirectionalLight(0xffffff, 0.8); dl.position.set(0.6, 2.5, 0.8); scene.add(dl);
+const pl = new THREE.PointLight(0xffd9a0, 0.7, 4); pl.position.set(0, 1.9, -0.4); scene.add(pl);
+
+/* --------------------------------------------------------------- helpers */
+const M = (color, o) => new THREE.MeshStandardMaterial(Object.assign({ color: color, roughness: 0.6, metalness: 0 }, o || {}));
+const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const cyl = (rt, rb, h, s, open) => new THREE.CylinderGeometry(rt, rb, h, s || 24, 1, !!open);
+function mesh(geo, mat, x, y, z, parent) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x || 0, y || 0, z || 0);
+  if (parent) parent.add(m);
+  return m;
+}
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const ease = k => (k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2);
+
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d');
+  const t = new THREE.CanvasTexture(c);
+  t.anisotropy = 4;
+  return { c: c, g: g, t: t, w: w, h: h };
+}
+function rr(g, x, y, w, h, r) {
+  g.beginPath(); g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath();
+}
+function wrap(g, text, x, y, maxW, lh) {
+  const words = text.split(' '); let line = '';
+  for (const w of words) {
+    const test = line ? line + ' ' + w : w;
+    if (g.measureText(test).width > maxW && line) { g.fillText(line, x, y); y += lh; line = w; }
+    else line = test;
+  }
+  if (line) { g.fillText(line, x, y); y += lh; }
+  return y;
+}
+function star(g, cx, cy, R, filled) {
+  g.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? R * 0.45 : R, a = -Math.PI / 2 + i * Math.PI / 5;
+    const px = cx + Math.cos(a) * r, py = cy + Math.sin(a) * r;
+    if (i) g.lineTo(px, py); else g.moveTo(px, py);
+  }
+  g.closePath();
+  g.fillStyle = filled ? '#ffc94d' : '#4a3d30'; g.fill();
+  g.lineWidth = 3; g.strokeStyle = filled ? '#b98314' : '#5e4e3d'; g.stroke();
+}
+function screenPlane(w, h, pw, ph, draw) {
+  const cv = makeCanvas(w, h);
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(pw, ph), new THREE.MeshBasicMaterial({ map: cv.t, transparent: true }));
+  const s = { mesh: m, cv: cv, draw: draw, redraw: function () { cv.g.clearRect(0, 0, w, h); draw(cv.g, w, h); cv.t.needsUpdate = true; } };
+  s.redraw();
+  return s;
+}
+
+/* ------------------------------------------------------------ positions */
+const GX = -0.42, GZ = -0.78;           // grinder
+const MX = 0.55, MZ = -0.80;            // espresso machine
+const JAR_REST = V(-0.72, T + 0.075, -0.62);
+const JAR_POUR = V(-0.35, T + 0.54, GZ);
+const PF_REST = V(-0.24, T + 0.03, -0.52);
+const PF_GRIND = V(GX, T + 0.125, GZ + 0.04);
+const PF_MAT = V(-0.02, T + 0.036, -0.52);
+const PF_LOCK = V(MX, T + 0.165, MZ + 0.06);
+const TAMP_REST = V(0.12, T, -0.52);
+const CUP_REST = V(0.28, T + 0.006, -0.50);
+const CUP_TRAY = V(MX, T + 0.03, MZ + 0.06);
+
+/* ----------------------------------------------------------------- room */
+const room = new THREE.Group(); scene.add(room);
+const floor = mesh(new THREE.CircleGeometry(4, 48), M(0x3a2f27, { roughness: 0.9 }), 0, 0, 0, room);
+floor.rotation.x = -Math.PI / 2;
+mesh(new THREE.PlaneGeometry(6, 3.4), M(0x6b5a4a, { roughness: 0.95 }), 0, 1.7, -1.8, room);
+const sign = screenPlane(512, 96, 1.5, 0.28, function (g, w, h) {
+  g.fillStyle = '#231a14'; rr(g, 4, 4, w - 8, h - 8, 18); g.fill();
+  g.lineWidth = 5; g.strokeStyle = '#e8b86d'; g.stroke();
+  g.fillStyle = '#e8b86d'; g.font = '700 46px system-ui,Arial,sans-serif'; g.textAlign = 'center';
+  g.fillText('SPEAK ACADEMY CAFE', w / 2, 63); g.textAlign = 'left';
+});
+sign.mesh.position.set(0, 2.55, -1.78); room.add(sign.mesh);
+
+const tableG = new THREE.Group(); scene.add(tableG);
+const wood = M(0x5e3f26, { roughness: 0.8 });
+mesh(box(1.9, 0.05, 0.78), wood, 0, T - 0.025, -0.7, tableG);
+[[-0.9, -0.38], [0.9, -0.38], [-0.9, -1.02], [0.9, -1.02]].forEach(function (p) {
+  mesh(box(0.05, T - 0.05, 0.05), wood, p[0], (T - 0.05) / 2, p[1], tableG);
+});
+
+/* ---------------------------------------------------------- interactables */
+const interactables = [];
+function reg(id, obj, ui) {
+  obj.userData.id = id; obj.userData.ui = !!ui; obj.userData.meshes = [];
+  if (!ui) obj.traverse(function (o) {
+    if (o.isMesh) { o.material = o.material.clone(); obj.userData.meshes.push(o); }
+  });
+  interactables.push(obj);
+}
+const labels = [];
+function addLabel(parent, text, x, y, z) {
+  const cv = makeCanvas(256, 64), g = cv.g;
+  g.fillStyle = 'rgba(20,14,10,.88)'; rr(g, 2, 2, 252, 60, 22); g.fill();
+  g.lineWidth = 4; g.strokeStyle = '#e8b86d'; g.stroke();
+  g.fillStyle = '#fff'; let fs = 30; g.font = '600 ' + fs + 'px system-ui,Arial,sans-serif';
+  while (g.measureText(text).width > 220 && fs > 14) { fs -= 2; g.font = '600 ' + fs + 'px system-ui,Arial,sans-serif'; }
+  g.textAlign = 'center'; g.fillText(text, 128, 32 + fs * 0.35);
+  cv.t.needsUpdate = true;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: cv.t, transparent: true, depthTest: false }));
+  sp.scale.set(0.17, 0.0425, 1); sp.position.set(x, y, z); sp.renderOrder = 10;
+  sp.raycast = function () {};
+  parent.add(sp); labels.push(sp);
+}
+
+/* ---------------------------------------------------- bean jar + beans */
+const beanGeo = new THREE.SphereGeometry(0.009, 8, 6);
+const beanMats = [M(0x4a2a14), M(0x5a3419), M(0x3b200f)];
+function beanCloud(n, rMax, y0, y1, seed) {
+  const g = new THREE.Group(); let s = seed;
+  const rnd = function () { s = (s * 16807) % 2147483647; return s / 2147483647; };
+  for (let i = 0; i < n; i++) {
+    const m = new THREE.Mesh(beanGeo, beanMats[i % 3]);
+    const a = rnd() * 6.283, r = Math.sqrt(rnd()) * rMax;
+    m.position.set(Math.cos(a) * r, y0 + rnd() * (y1 - y0), Math.sin(a) * r);
+    m.scale.set(1, 0.7, 0.6); m.rotation.set(rnd() * 3, rnd() * 3, rnd() * 3);
+    g.add(m);
+  }
+  return g;
+}
+const jar = new THREE.Group(); jar.position.copy(JAR_REST); scene.add(jar);
+mesh(cyl(0.055, 0.055, 0.15, 24, true), M(0xbfd8e0, { transparent: true, opacity: 0.28, side: THREE.DoubleSide, roughness: 0.1 }), 0, 0, 0, jar);
+mesh(cyl(0.055, 0.055, 0.006, 24), M(0xbfd8e0, { transparent: true, opacity: 0.4 }), 0, -0.075, 0, jar);
+mesh(cyl(0.058, 0.058, 0.01, 24), M(0x2a2a2a), 0, 0.078, 0, jar).visible = false; // (lid left off)
+jar.add(beanCloud(55, 0.045, -0.07, 0.015, 7));
+addLabel(jar, 'coffee beans', 0, 0.13, 0);
+reg('jar', jar);
+
+/* ---------------------------------------------------------------- grinder */
+const grinder = new THREE.Group(); grinder.position.set(GX, T, GZ); scene.add(grinder);
+const dark = M(0x2b2b2e, { roughness: 0.45, metalness: 0.3 });
+mesh(box(0.18, 0.03, 0.2), dark, 0, 0.015, 0.02, grinder);
+mesh(box(0.14, 0.3, 0.07), dark, 0, 0.15, -0.065, grinder);
+mesh(box(0.14, 0.14, 0.16), M(0x3a3a3e, { roughness: 0.4, metalness: 0.35 }), 0, 0.24, 0, grinder);
+mesh(cyl(0.085, 0.045, 0.16, 28, true), M(0x889099, { transparent: true, opacity: 0.32, side: THREE.DoubleSide, roughness: 0.1 }), 0, 0.39, 0, grinder);
+mesh(cyl(0.09, 0.09, 0.012, 28), dark, 0, 0.47, 0, grinder).visible = true;
+mesh(cyl(0.012, 0.012, 0.025, 12), M(0x888888, { metalness: 0.6, roughness: 0.3 }), 0, 0.165, 0.04, grinder); // chute
+const hopBeans = beanCloud(40, 0.045, 0.33, 0.43, 11); grinder.add(hopBeans); hopBeans.scale.setScalar(0.001); hopBeans.visible = false;
+const gbtn = new THREE.Group(); gbtn.position.set(0, 0.24, 0.086); gbtn.rotation.x = Math.PI / 2; grinder.add(gbtn);
+mesh(cyl(0.024, 0.024, 0.014, 20), M(0x23b35a, { roughness: 0.4 }), 0, 0, 0, gbtn);
+reg('grindBtn', gbtn);
+addLabel(grinder, 'hopper', 0.15, 0.42, 0.02);
+addLabel(grinder, 'grinder', 0, 0.02, 0.15);
+
+/* ------------------------------------------------------ espresso machine */
+const machine = new THREE.Group(); machine.position.set(MX, T, MZ); scene.add(machine);
+const steel = M(0xcfd3d8, { roughness: 0.32, metalness: 0.55 });
+mesh(box(0.4, 0.03, 0.26), M(0x555a60, { roughness: 0.4, metalness: 0.6 }), 0, 0.015, 0.04, machine);
+mesh(box(0.4, 0.36, 0.1), steel, 0, 0.18, -0.07, machine);
+mesh(box(0.4, 0.14, 0.28), steel, 0, 0.29, 0.02, machine);
+mesh(cyl(0.035, 0.035, 0.03, 24), M(0x9aa0a6, { metalness: 0.6, roughness: 0.3 }), 0, 0.205, 0.06, machine);
+mesh(cyl(0.005, 0.005, 0.2, 10), M(0xb0b5ba, { metalness: 0.7 }), 0.17, 0.12, 0.13, machine);
+mesh(new THREE.SphereGeometry(0.008, 10, 8), new THREE.MeshBasicMaterial({ color: 0x4dff88 }), -0.17, 0.33, 0.162, machine);
+const gauge = screenPlane(128, 128, 0.07, 0.07, function () {});
+function drawGauge(bar) {
+  const g = gauge.cv.g; g.clearRect(0, 0, 128, 128);
+  g.fillStyle = '#f4f4f0'; g.beginPath(); g.arc(64, 64, 60, 0, 6.283); g.fill();
+  g.lineWidth = 6; g.strokeStyle = '#333'; g.stroke();
+  g.strokeStyle = '#333'; g.lineWidth = 3;
+  for (let i = 0; i <= 12; i++) {
+    const a = (-225 + i * 22.5) * Math.PI / 180;
+    g.beginPath(); g.moveTo(64 + Math.cos(a) * 46, 64 + Math.sin(a) * 46); g.lineTo(64 + Math.cos(a) * 54, 64 + Math.sin(a) * 54); g.stroke();
+  }
+  g.fillStyle = '#222'; g.font = '700 16px Arial'; g.textAlign = 'center'; g.fillText('BAR', 64, 98);
+  const a = (-225 + bar * 22.5) * Math.PI / 180;
+  g.strokeStyle = '#d22'; g.lineWidth = 5; g.beginPath(); g.moveTo(64, 64); g.lineTo(64 + Math.cos(a) * 44, 64 + Math.sin(a) * 44); g.stroke();
+  gauge.cv.t.needsUpdate = true;
+}
+drawGauge(0);
+gauge.mesh.position.set(-0.12, 0.29, 0.162); machine.add(gauge.mesh);
+const timerScr = screenPlane(256, 128, 0.12, 0.06, function () {});
+function drawTimer() {
+  const g = timerScr.cv.g, w = 256, h = 128; g.clearRect(0, 0, w, h);
+  g.fillStyle = '#0d1a12'; rr(g, 2, 2, w - 4, h - 4, 14); g.fill(); g.lineWidth = 3; g.strokeStyle = '#3d9a63'; g.stroke();
+  g.fillStyle = '#7dffb0'; g.font = '600 18px Arial'; g.textAlign = 'left'; g.fillText('SHOT TIMER', 14, 26);
+  g.font = '700 54px Arial'; g.textAlign = 'center';
+  g.fillText(Math.floor(S.brewT) + ' s', w / 2, 80);
+  const x0 = 14, x1 = w - 14, bw = x1 - x0, mx = 45;
+  g.fillStyle = '#1f3a2a'; g.fillRect(x0, 96, bw, 14);
+  g.fillStyle = '#2f9a5a'; g.fillRect(x0 + bw * 25 / mx, 96, bw * 5 / mx, 14);
+  g.fillStyle = '#fff'; g.fillRect(x0 + bw * Math.min(S.brewT, mx) / mx - 2, 92, 4, 22);
+  g.textAlign = 'left'; timerScr.cv.t.needsUpdate = true;
+}
+timerScr.mesh.position.set(0.0, 0.29, 0.162); machine.add(timerScr.mesh);
+const bbtn = new THREE.Group(); bbtn.position.set(0.13, 0.29, 0.165); bbtn.rotation.x = Math.PI / 2; machine.add(bbtn);
+mesh(cyl(0.024, 0.024, 0.014, 20), M(0xd23a2a, { roughness: 0.35 }), 0, 0, 0, bbtn);
+reg('brewBtn', bbtn);
+addLabel(machine, 'espresso machine', 0, 0.41, 0.05);
+addLabel(machine, 'group head', -0.14, 0.17, 0.2);
+addLabel(machine, 'brew button', 0.13, 0.355, 0.2);
+
+/* ------------------------------------------------------------ portafilter */
+const pf = new THREE.Group(); pf.position.copy(PF_REST); scene.add(pf);
+const silver = M(0xc9ccd0, { roughness: 0.3, metalness: 0.6 });
+mesh(cyl(0.034, 0.03, 0.03, 28), silver, 0, 0, 0, pf);
+mesh(cyl(0.037, 0.037, 0.006, 28), silver, 0, 0.012, 0, pf);
+mesh(cyl(0.008, 0.008, 0.016, 12), silver, 0, -0.022, 0, pf);
+const handle = mesh(cyl(0.011, 0.012, 0.17, 14), M(0x2c1f16, { roughness: 0.7 }), 0, 0, 0.12, pf);
+handle.rotation.x = Math.PI / 2;
+const groundsMat = M(0x3a2112, { roughness: 1 });
+const grounds = mesh(cyl(0.029, 0.029, 0.02, 24), groundsMat, 0, -0.005, 0, pf);
+const mound = mesh(new THREE.SphereGeometry(0.03, 16, 10), M(0x4a2a16, { roughness: 1 }), 0, 0.006, 0, pf);
+mound.scale.set(1, 0.45, 1);
+grounds.visible = false; mound.visible = false;
+addLabel(pf, 'portafilter', 0.1, 0.07, 0.15);
+reg('pf', pf);
+
+/* ----------------------------------------------------- tamper + tamp mat */
+const mat = new THREE.Group(); mat.position.set(PF_MAT.x, T, PF_MAT.z); scene.add(mat);
+mesh(box(0.13, 0.006, 0.13), M(0x1b1b1d, { roughness: 0.95 }), 0, 0.003, 0, mat);
+addLabel(mat, 'tamping mat', 0, 0.015, 0.1);
+const tamper = new THREE.Group(); tamper.position.copy(TAMP_REST); scene.add(tamper);
+mesh(cyl(0.029, 0.029, 0.012, 24), silver, 0, 0.006, 0, tamper);
+mesh(cyl(0.011, 0.014, 0.05, 16), silver, 0, 0.037, 0, tamper);
+mesh(new THREE.SphereGeometry(0.024, 18, 12), M(0x2c1f16, { roughness: 0.6 }), 0, 0.075, 0, tamper).scale.set(1, 0.8, 1);
+addLabel(tamper, 'tamper', 0, 0.14, 0);
+reg('tamper', tamper);
+
+/* -------------------------------------------------------------- cup + fx */
+mesh(cyl(0.07, 0.065, 0.006, 28), M(0xf2efe8, { roughness: 0.4 }), CUP_REST.x, T + 0.003, CUP_REST.z, scene); // saucer
+const cup = new THREE.Group(); cup.position.copy(CUP_REST); scene.add(cup);
+const ceramic = M(0xf7f4ee, { roughness: 0.25, side: THREE.DoubleSide });
+mesh(cyl(0.042, 0.032, 0.065, 28, true), ceramic, 0, 0.0325, 0, cup);
+mesh(cyl(0.032, 0.032, 0.006, 28), ceramic, 0, 0.003, 0, cup);
+const handleCup = mesh(new THREE.TorusGeometry(0.017, 0.005, 8, 18, Math.PI * 1.2), ceramic, 0.045, 0.035, 0, cup);
+handleCup.rotation.z = -Math.PI * 0.6;
+const liquid = mesh(cyl(0.031, 0.031, 0.05, 24), M(0x3b1d0b, { roughness: 0.3 }), 0, 0.006, 0, cup);
+const crema = mesh(new THREE.CircleGeometry(0.031, 24), M(0xc28a4c, { roughness: 0.5 }), 0, 0.01, 0, cup);
+crema.rotation.x = -Math.PI / 2;
+liquid.visible = false; crema.visible = false;
+addLabel(cup, 'cup', -0.075, 0.09, 0.08);
+reg('cup', cup);
+
+const stream = new THREE.Mesh((function () { const g = cyl(0.003, 0.003, 1, 8); g.translate(0, -0.5, 0); return g; })(), M(0x3b1d0b, { roughness: 0.3 }));
+stream.position.set(PF_LOCK.x, T + 0.135, PF_LOCK.z); stream.visible = false; scene.add(stream);
+
+const steamTex = (function () {
+  const cv = makeCanvas(64, 64), g = cv.g, gr = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+  gr.addColorStop(0, 'rgba(255,255,255,.9)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64); cv.t.needsUpdate = true; return cv.t;
+})();
+const steam = [];
+for (let i = 0; i < 7; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: steamTex, transparent: true, depthWrite: false, opacity: 0 }));
+  s.visible = false; scene.add(s); steam.push(s);
+}
+
+/* ---------------------------------------------------------- panel + UI */
+const STEPS = [];
+const S = { mode: 'menu', step: 0, mistakes: 0, msg: '', msgCol: '#ffb38a', msgUntil: 0, busy: false, holding: false,
+            grind: 0, brewing: false, brewT: 0, shot: null, voice: true, stars: 0, dirty: true, steamOn: false, gaugeV: 0 };
+
+function drawPanel(g, w, h) {
+  const grd = g.createLinearGradient(0, 0, 0, h); grd.addColorStop(0, '#2c231b'); grd.addColorStop(1, '#17120e');
+  g.fillStyle = grd; rr(g, 6, 6, w - 12, h - 12, 34); g.fill();
+  g.lineWidth = 6; g.strokeStyle = '#c98a43'; g.stroke();
+  g.textBaseline = 'alphabetic'; g.textAlign = 'left';
+  g.fillStyle = '#e8b86d'; g.font = '700 34px system-ui,Arial,sans-serif'; g.fillText('ESPRESSO LAB', 40, 66);
+  g.textAlign = 'right'; g.fillStyle = '#b9a58e'; g.font = '600 30px system-ui,Arial,sans-serif';
+  const guided = S.mode === 'guided', test = S.mode === 'test';
+  const hdr = guided ? 'GUIDED  -  step ' + Math.min(S.step + 1, STEPS.length) + ' / ' + STEPS.length
+            : test ? 'TEST MODE  -  no hints' : S.mode === 'done' ? 'FINISHED' : 'WELCOME';
+  g.fillText(hdr, w - 40, 66); g.textAlign = 'left';
+  const white = '#ffffff', soft = '#f3e9dc';
+  if (S.mode === 'menu') {
+    g.fillStyle = white; g.font = '700 66px system-ui,Arial,sans-serif'; g.fillText('Welcome, barista!', 40, 160);
+    g.fillStyle = soft; g.font = '500 38px system-ui,Arial,sans-serif';
+    let y = wrap(g, 'Learn to make a real espresso, step by step.', 40, 230, w - 80, 50);
+    y = wrap(g, 'GUIDED: hints and new English words.   TEST: no help at all.', 40, y + 8, w - 80, 50);
+    g.fillStyle = '#e8b86d'; g.font = '600 34px system-ui,Arial,sans-serif';
+    wrap(g, 'Point at a button below and pull the trigger.', 40, y + 24, w - 80, 46);
+  } else if (guided && S.step < STEPS.length) {
+    const st = STEPS[S.step];
+    g.fillStyle = white; g.font = '700 50px system-ui,Arial,sans-serif'; g.fillText((S.step + 1) + '. ' + st.title, 40, 142);
+    g.fillStyle = soft; g.font = '500 38px system-ui,Arial,sans-serif'; wrap(g, st.text, 40, 206, w - 80, 50);
+    drawChips(g, st.vocab, 40, 330);
+  } else if (test) {
+    g.fillStyle = white; g.font = '700 54px system-ui,Arial,sans-serif'; g.fillText('Make an espresso!', 40, 150);
+    g.fillStyle = soft; g.font = '500 38px system-ui,Arial,sans-serif';
+    wrap(g, 'No hints and no labels. Think about the right order. Every wrong move is a mistake.', 40, 214, w - 80, 50);
+    g.fillStyle = '#ffb38a'; g.font = '700 40px system-ui,Arial,sans-serif'; g.fillText('Mistakes: ' + S.mistakes, 40, 350);
+  } else if (S.mode === 'done') {
+    g.fillStyle = white; g.font = '700 58px system-ui,Arial,sans-serif'; g.fillText('Espresso ready!', 40, 150);
+    for (let i = 0; i < 3; i++) star(g, w - 230 + i * 72, 135, 30, i < S.stars);
+    const ok = S.shot >= 25 && S.shot <= 30;
+    g.font = '600 38px system-ui,Arial,sans-serif'; g.fillStyle = ok ? '#7dffb0' : '#ffb38a';
+    g.fillText('Shot time: ' + Math.round(S.shot) + ' s   (best: 25 - 30 s)', 40, 220);
+    g.fillStyle = soft; g.font = '500 36px system-ui,Arial,sans-serif';
+    g.fillText(S.shot < 25 ? 'Too fast: the coffee tastes sour.' : S.shot > 30 ? 'Too slow: the coffee tastes bitter.' : 'Perfect! Sweet, balanced and with crema.', 40, 272);
+    g.fillText('Mistakes: ' + S.mistakes, 40, 324);
+    g.fillStyle = '#e8b86d'; g.font = '600 32px system-ui,Arial,sans-serif'; g.fillText('Press Restart to play again.', 40, 376);
+  }
+  if (S.mode === 'guided' || S.mode === 'test') {
+    const d = Math.min(S.step, STEPS.length) / STEPS.length;
+    g.fillStyle = '#3a2d22'; rr(g, 40, 410, w - 80, 14, 7); g.fill();
+    g.fillStyle = '#c98a43'; if (d > 0) { rr(g, 40, 410, Math.max(14, (w - 80) * d), 14, 7); g.fill(); }
+  }
+  if (S.msg && performance.now() < S.msgUntil) {
+    g.fillStyle = 'rgba(20,14,10,.95)'; rr(g, 30, 340, w - 60, 56, 16); g.fill();
+    g.fillStyle = S.msgCol; g.font = '700 34px system-ui,Arial,sans-serif'; g.textAlign = 'center'; g.fillText(S.msg, w / 2, 380); g.textAlign = 'left';
+  }
+}
+function drawChips(g, words, x, y) {
+  g.font = '600 28px system-ui,Arial,sans-serif'; g.fillStyle = '#b9a58e'; g.fillText('New words:', x, y + 34);
+  let cx = x + g.measureText('New words:').width + 22;
+  (words || []).forEach(function (wd) {
+    const tw = g.measureText(wd).width + 34;
+    g.fillStyle = '#4a3827'; rr(g, cx, y, tw, 50, 25); g.fill();
+    g.lineWidth = 2; g.strokeStyle = '#c98a43'; g.stroke();
+    g.fillStyle = '#ffe3b8'; g.fillText(wd, cx + 17, y + 35); cx += tw + 12;
+  });
+}
+const panel = screenPlane(1024, 448, 1.3, 0.569, drawPanel);
+panel.mesh.position.set(0, 1.78, -1.15); panel.mesh.rotation.x = 0.1; scene.add(panel.mesh);
+
+const uiBtns = {};
+function makeBtn(id, label, x) {
+  const sc = screenPlane(256, 96, 0.3, 0.1125, function (g, w, h) {
+    g.fillStyle = '#3a2c20'; rr(g, 4, 4, w - 8, h - 8, 26); g.fill();
+    g.lineWidth = 5; g.strokeStyle = '#c98a43'; g.stroke();
+    g.fillStyle = '#ffe3b8'; g.font = '700 36px system-ui,Arial,sans-serif'; g.textAlign = 'center';
+    g.fillText(typeof label === 'function' ? label() : label, w / 2, 60);
+  });
+  sc.mesh.position.set(x, 1.42, -1.1); sc.mesh.rotation.x = -0.3; scene.add(sc.mesh);
+  reg(id, sc.mesh, true); uiBtns[id] = sc; return sc;
+}
+makeBtn('btnGuided', 'Guided', -0.48); makeBtn('btnTest', 'Test', -0.16);
+makeBtn('btnRestart', 'Restart', 0.16);
+makeBtn('btnVoice', function () { return S.voice ? 'Voice: ON' : 'Voice: OFF'; }, 0.48);
+
+function flash(msg, ms, col) { S.msg = msg; S.msgCol = col || '#ffb38a'; S.msgUntil = performance.now() + ms; S.dirty = true; }
+
+/* ------------------------------------------------------------------ audio */
+let AC = null, noiseBuf = null, grindG = null, brewG = null;
+function loopNoise(freq, type) {
+  const src = AC.createBufferSource(); src.buffer = noiseBuf; src.loop = true;
+  const f = AC.createBiquadFilter(); f.type = type; f.frequency.value = freq;
+  const g = AC.createGain(); g.gain.value = 0;
+  src.connect(f); f.connect(g); g.connect(AC.destination); src.start(); return g;
+}
+function initAudio() {
+  if (AC) { try { if (AC.state === 'suspended') AC.resume(); } catch (e) {} return; }
+  try {
+    AC = new (window.AudioContext || window.webkitAudioContext)();
+    const len = AC.sampleRate * 2; noiseBuf = AC.createBuffer(1, len, AC.sampleRate);
+    const d = noiseBuf.getChannelData(0); for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
+    grindG = loopNoise(600, 'lowpass'); brewG = loopNoise(3000, 'highpass');
+  } catch (e) { AC = null; }
+}
+function setG(g, v) { try { if (g && AC) g.gain.setTargetAtTime(v, AC.currentTime, 0.06); } catch (e) {} }
+function tone(f, d, type, v) {
+  try {
+    if (!AC) return; const o = AC.createOscillator(), g = AC.createGain();
+    o.type = type || 'sine'; o.frequency.value = f; g.gain.value = v || 0.12;
+    g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime + d);
+    o.connect(g); g.connect(AC.destination); o.start(); o.stop(AC.currentTime + d);
+  } catch (e) {}
+}
+const beepOk = () => { tone(660, 0.12); setTimeout(() => tone(880, 0.16), 110); };
+const beepBad = () => tone(180, 0.25, 'square', 0.08);
+const thud = () => tone(90, 0.18, 'triangle', 0.25);
+function say(text) {
+  if (!S.voice || !text) return;
+  try {
+    if (!('speechSynthesis' in window)) return;
+    window.speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text); u.lang = 'en-US'; u.rate = 0.9; window.speechSynthesis.speak(u);
+  } catch (e) {}
+}
+
+/* ----------------------------------------------------------------- tweens */
+const tweens = [];
+function tween(dur, fn) { return new Promise(function (res) { tweens.push({ t: 0, dur: dur, fn: fn, res: res }); }); }
+function updateTweens(dt) {
+  for (let i = tweens.length - 1; i >= 0; i--) {
+    const w = tweens[i]; w.t += dt; const k = Math.min(1, w.t / w.dur); w.fn(k);
+    if (k >= 1) { tweens.splice(i, 1); w.res(); }
+  }
+}
+function moveTo(obj, pos, ry, dur, lift) {
+  const p0 = obj.position.clone(), r0 = obj.rotation.y;
+  return tween(dur, function (k) {
+    const e = ease(k); obj.position.lerpVectors(p0, pos, e);
+    obj.position.y += (lift || 0) * Math.sin(Math.PI * e); obj.rotation.y = r0 + (ry - r0) * e;
+  });
+}
+const sleep = d => tween(d, function () {});
+
+/* ------------------------------------------------------------- game logic */
+function setGrind(f) {
+  grounds.visible = f > 0.001; grounds.scale.y = Math.max(0.05, f); grounds.position.y = -0.005 + 0.01 * grounds.scale.y;
+  mound.visible = f > 0.3; mound.scale.set(Math.min(1, f), 0.45 * Math.min(1, f), Math.min(1, f));
+}
+function setCupFill(f) {
+  const v = f > 0.001; liquid.visible = v; crema.visible = v;
+  liquid.scale.y = Math.max(0.001, f); liquid.position.y = 0.006 + 0.025 * liquid.scale.y; crema.position.y = 0.006 + 0.05 * liquid.scale.y + 0.001;
+}
+function advance() {
+  S.step++; S.dirty = true;
+  if (S.step < STEPS.length && S.mode === 'guided') say(STEPS[S.step].say);
+  beepOk();
+}
+function finishShot(auto) {
+  S.brewing = false; S.shot = S.brewT; setG(brewG, 0); stream.visible = false; S.gaugeV = 0; drawGauge(0); drawTimer();
+  S.steamOn = true; tone(900, 0.5, 'sine', 0.15);
+  if (auto) flash('Too long! The machine stopped.', 2500, '#ff8a5c');
+  advance();
+}
+function finishGame() {
+  const ok = S.shot >= 25 && S.shot <= 30;
+  S.stars = 1 + (ok ? 1 : 0) + (S.mistakes <= 1 ? 1 : 0);
+  S.mode = 'done'; S.dirty = true;
+  say('Your espresso is ready. ' + (ok ? 'Perfect shot time!' : S.shot < 25 ? 'The shot was too fast.' : 'The shot was too slow.') + ' You made ' + S.mistakes + ' mistakes.');
+  tone(660, 0.15); setTimeout(() => tone(880, 0.15), 150); setTimeout(() => tone(1175, 0.3), 300);
+}
+
+STEPS.push(
+  { id: 'pf', title: 'Portafilter under the grinder', text: 'Point at the portafilter and pull the trigger. It goes under the grinder.', say: 'Step one. Put the portafilter under the grinder.', vocab: ['portafilter', 'grinder'],
+    run: async function () { await moveTo(pf, PF_GRIND, 0, 0.9, 0.12); advance(); } },
+  { id: 'jar', title: 'Add the coffee beans', text: 'Pick up the jar of coffee beans and pour the beans into the hopper.', say: 'Step two. Pour the coffee beans into the hopper.', vocab: ['coffee beans', 'hopper', 'pour'],
+    run: async function () {
+      const p0 = jar.position.clone();
+      await moveTo(jar, JAR_POUR, 0, 1.0, 0.1);
+      const z0 = jar.rotation.z; await tween(0.8, function (k) { jar.rotation.z = z0 + 2.0 * ease(k); });
+      hopBeans.visible = true;
+      await tween(0.9, function (k) { hopBeans.scale.setScalar(Math.max(0.001, ease(k))); });
+      await sleep(0.3);
+      await tween(0.6, function (k) { jar.rotation.z = 2.0 * (1 - ease(k)); });
+      await moveTo(jar, p0, 0, 0.9, 0.1); advance();
+    } },
+  { id: 'grindBtn', title: 'Grind the coffee', text: 'Press and HOLD the green button. Keep holding until the coffee is ground.', say: 'Step three. Hold the green button to grind the coffee.', vocab: ['grind', 'ground coffee', 'hold'], run: null },
+  { id: 'pf', title: 'Move to the tamping mat', text: 'Take the portafilter out of the grinder. Put it on the tamping mat.', say: 'Step four. Put the portafilter on the tamping mat.', vocab: ['tamping mat', 'take out'],
+    run: async function () { await moveTo(pf, PF_MAT, 0, 0.9, 0.12); advance(); } },
+  { id: 'tamper', title: 'Tamp the coffee', text: 'Press the coffee flat and firm with the tamper. Push straight down.', say: 'Step five. Tamp the coffee. Press it flat.', vocab: ['tamper', 'press', 'flat'],
+    run: async function () {
+      const hover = V(PF_MAT.x, T + 0.13, PF_MAT.z);
+      await moveTo(tamper, hover, 0, 0.8, 0.08);
+      await tween(0.6, function (k) {
+        const e = ease(k); tamper.position.y = T + 0.13 - (0.13 - 0.046) * e;
+        const f = 1 - 0.25 * e; grounds.scale.y = f; grounds.position.y = -0.005 + 0.01 * f;
+        mound.scale.set(1 - e, 0.45 * (1 - e), 1 - e);
+      });
+      mound.visible = false; groundsMat.color.setHex(0x2c180c); thud();
+      await tween(0.5, function (k) { tamper.rotation.y = Math.PI * ease(k); });
+      await moveTo(tamper, TAMP_REST, 0, 0.8, 0.08); advance();
+    } },
+  { id: 'pf', title: 'Lock it in', text: 'Put the portafilter in the group head. Turn it to lock it.', say: 'Step six. Lock the portafilter into the group head.', vocab: ['group head', 'lock', 'turn'],
+    run: async function () {
+      const low = V(PF_LOCK.x, PF_LOCK.y - 0.05, PF_LOCK.z);
+      await moveTo(pf, low, 0.9, 1.0, 0.12);
+      await tween(0.4, function (k) { pf.position.y = low.y + 0.05 * ease(k); });
+      await tween(0.5, function (k) { pf.rotation.y = 0.9 * (1 - ease(k)); });
+      thud(); advance();
+    } },
+  { id: 'cup', title: 'Place the cup', text: 'Put the cup under the spout. Careful, the machine is hot!', say: 'Step seven. Put the cup under the spout. Careful, it is hot.', vocab: ['cup', 'spout', 'hot'],
+    run: async function () { await moveTo(cup, CUP_TRAY, 0, 0.9, 0.1); advance(); } },
+  { id: 'brewBtn', title: 'Start the shot', text: 'Press the red button to start. Watch the shot timer on the machine.', say: 'Step eight. Press the red button to start the shot.', vocab: ['brew', 'shot', 'pressure'],
+    run: async function () {
+      S.brewing = true; S.brewT = 0; stream.visible = true; setG(brewG, 0.22); drawTimer(); advance();
+      flash(S.mode === 'guided' ? 'Stop between 25 and 30 seconds!' : 'Brewing...', 2500, '#7dffb0');
+    } },
+  { id: 'brewBtn', title: 'Stop at the right time', text: 'Press the red button again to STOP. The best time is 25 to 30 seconds.', say: 'Now stop the shot between twenty five and thirty seconds.', vocab: ['stop', 'seconds', 'extraction'],
+    run: async function () { finishShot(false); } },
+  { id: 'cup', title: 'Serve it!', text: 'Lift the cup and serve your espresso to the customer.', say: 'Last step. Serve your espresso.', vocab: ['serve', 'espresso', 'crema'],
+    run: async function () { await moveTo(cup, CUP_REST, 0, 1.1, 0.16); finishGame(); } }
+);
+
+function resetScene() {
+  tweens.length = 0;
+  S.step = 0; S.mistakes = 0; S.busy = false; S.holding = false; S.grind = 0; S.brewing = false; S.brewT = 0; S.shot = null;
+  S.stars = 0; S.msg = ''; S.steamOn = false; S.gaugeV = 0;
+  jar.position.copy(JAR_REST); jar.rotation.set(0, 0, 0);
+  hopBeans.visible = false; hopBeans.scale.setScalar(0.001);
+  pf.position.copy(PF_REST); pf.rotation.set(0, 0, 0);
+  tamper.position.copy(TAMP_REST); tamper.rotation.set(0, 0, 0);
+  cup.position.copy(CUP_REST); cup.rotation.set(0, 0, 0);
+  groundsMat.color.setHex(0x3a2112); setGrind(0); setCupFill(0);
+  stream.visible = false; steam.forEach(s => { s.visible = false; });
+  setG(grindG, 0); setG(brewG, 0); drawGauge(0); drawTimer();
+  try { window.speechSynthesis && window.speechSynthesis.cancel(); } catch (e) {}
+  S.dirty = true;
+}
+function startMode(m) {
+  initAudio(); resetScene(); S.mode = m;
+  labels.forEach(l => { l.visible = (m === 'guided'); });
+  if (m === 'guided') say(STEPS[0].say); else say('Test mode. Make an espresso without help.');
+  S.dirty = true;
+}
+function currentTarget() {
+  return (S.mode === 'guided' || S.mode === 'test') && S.step < STEPS.length ? STEPS[S.step].id : null;
+}
+function uiButton(id) {
+  if (id === 'btnGuided') startMode('guided');
+  else if (id === 'btnTest') startMode('test');
+  else if (id === 'btnRestart') { resetScene(); S.mode = 'menu'; labels.forEach(l => { l.visible = false; }); S.dirty = true; }
+  else if (id === 'btnVoice') { S.voice = !S.voice; if (!S.voice) { try { window.speechSynthesis.cancel(); } catch (e) {} } uiBtns.btnVoice.redraw(); }
+}
+async function onPress(id) {
+  initAudio();
+  if (id.indexOf('btn') === 0) { uiButton(id); return; }
+  if (S.busy || (S.mode !== 'guided' && S.mode !== 'test') || S.step >= STEPS.length) return;
+  const st = STEPS[S.step];
+  if (id !== st.id) {
+    S.mistakes++; beepBad();
+    flash(S.mode === 'guided' ? 'Not that one. Follow the green glow.' : 'Not yet - think about the order!', 2200);
+    return;
+  }
+  if (id === 'grindBtn') { S.holding = true; return; }
+  S.busy = true;
+  try { await st.run(); } finally { S.busy = false; }
+}
+function onRelease() {
+  if (S.holding) {
+    S.holding = false; setG(grindG, 0);
+    if (S.grind < 1 && S.mode === 'guided') flash('Keep holding the green button!', 1800, '#ffe08a');
+  }
+}
+
+/* ---------------------------------------------------------------- input */
+const rc = new THREE.Raycaster(); rc.far = 6;
+const hover = [null, null, null];
+const tmpM = new THREE.Matrix4();
+function pick() {
+  const hits = rc.intersectObjects(interactables, true);
+  for (let i = 0; i < hits.length; i++) {
+    let o = hits[i].object; while (o && !o.userData.id) o = o.parent;
+    if (o) return { id: o.userData.id, dist: hits[i].distance };
+  }
+  return null;
+}
+const ctrl = [], cursors = [];
+for (let i = 0; i < 2; i++) {
+  const c = renderer.xr.getController(i); scene.add(c); ctrl.push(c);
+  const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([V(0, 0, 0), V(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0xffd37a }));
+  line.scale.z = 1.2; c.add(line); c.userData.line = line;
+  const cur = new THREE.Mesh(new THREE.SphereGeometry(0.008, 10, 8), new THREE.MeshBasicMaterial({ color: 0xffd37a })); cur.visible = false; scene.add(cur); cursors.push(cur);
+  c.addEventListener('selectstart', function () { const h = hover[i]; if (h) onPress(h.id); else initAudio(); });
+  c.addEventListener('selectend', onRelease);
+}
+// desktop mouse
+let orbit = { a: 0, e: 0.22, r: 1.75 }, drag = null, mouse = { x: 0, y: 0, in: false };
+const target = V(0, 1.25, -0.8);
+function updateOrbit() {
+  camera.position.set(target.x + orbit.r * Math.sin(orbit.a) * Math.cos(orbit.e), target.y + orbit.r * Math.sin(orbit.e), target.z + orbit.r * Math.cos(orbit.a) * Math.cos(orbit.e));
+  camera.lookAt(target);
+}
+const cv = renderer.domElement;
+function setMouse(ev) { const r = cv.getBoundingClientRect(); mouse.x = ((ev.clientX - r.left) / r.width) * 2 - 1; mouse.y = -((ev.clientY - r.top) / r.height) * 2 + 1; mouse.in = true; }
+cv.addEventListener('pointermove', function (ev) {
+  setMouse(ev);
+  if (drag) { orbit.a = Math.max(-0.9, Math.min(0.9, orbit.a - (ev.clientX - drag.x) * 0.004)); orbit.e = Math.max(0.02, Math.min(0.7, orbit.e + (ev.clientY - drag.y) * 0.003)); drag.x = ev.clientX; drag.y = ev.clientY; }
+});
+cv.addEventListener('pointerdown', function (ev) {
+  if (renderer.xr.isPresenting) return; setMouse(ev);
+  rc.setFromCamera(mouse, camera); const h = pick();
+  if (h) onPress(h.id); else { initAudio(); drag = { x: ev.clientX, y: ev.clientY }; }
+});
+window.addEventListener('pointerup', function () { drag = null; onRelease(); });
+cv.addEventListener('pointerleave', function () { mouse.in = false; });
+cv.addEventListener('wheel', function (ev) { ev.preventDefault(); orbit.r = Math.max(0.7, Math.min(2.2, orbit.r + ev.deltaY * 0.001)); }, { passive: false });
+
+/* ------------------------------------------------------------- XR buttons */
+let xrMode = null;
+function applyXRVisuals(m) {
+  if (m === 'immersive-ar') { scene.background = null; room.visible = false; renderer.setClearAlpha(0); }
+  else { scene.background = BG; room.visible = true; renderer.setClearAlpha(1); }
+}
+async function startXR(mode) {
+  try {
+    const session = await navigator.xr.requestSession(mode, { optionalFeatures: ['local-floor', 'bounded-floor', 'hand-tracking'] });
+    xrMode = mode; applyXRVisuals(mode);
+    session.addEventListener('end', function () { xrMode = null; applyXRVisuals(null); });
+    await renderer.xr.setSession(session);
+  } catch (e) {
+    $('note').textContent = 'Could not start the headset session (' + (e && e.message ? e.message : e) + '). If this page is shown inside another page, open its direct link in the Quest Browser.';
+  }
+}
+(async function () {
+  if (!navigator.xr) { $('note').textContent = 'WebXR not available here - desktop preview only. Open this page in the Meta Quest Browser to use the headset.'; return; }
+  try {
+    if (await navigator.xr.isSessionSupported('immersive-vr')) { $('bVR').style.display = ''; $('bVR').onclick = function () { startXR('immersive-vr'); }; }
+    if (await navigator.xr.isSessionSupported('immersive-ar')) { $('bAR').style.display = ''; $('bAR').onclick = function () { startXR('immersive-ar'); }; }
+  } catch (e) {}
+})();
+$('bGuided').onclick = () => startMode('guided');
+$('bTest').onclick = () => startMode('test');
+$('bRestart').onclick = () => uiButton('btnRestart');
+
+/* ------------------------------------------------------------ main update */
+const gold = 0xffc94d, green = 0x33ff88;
+function glow(obj, hex, k) {
+  const ms = obj.userData.meshes;
+  for (let i = 0; i < ms.length; i++) { const m = ms[i].material; if (m.emissive) { m.emissive.setHex(hex); m.emissiveIntensity = k; } }
+}
+let last = 0, timerAcc = 0, hudKey = '';
+function update(dt, t) {
+  updateTweens(dt);
+  if (S.msg && performance.now() > S.msgUntil) { S.msg = ''; S.dirty = true; }
+
+  // hover
+  if (renderer.xr.isPresenting) {
+    for (let i = 0; i < 2; i++) {
+      const c = ctrl[i];
+      if (!c.visible) { hover[i] = null; cursors[i].visible = false; c.userData.line.visible = false; continue; }
+      c.userData.line.visible = true;
+      tmpM.identity().extractRotation(c.matrixWorld);
+      rc.ray.origin.setFromMatrixPosition(c.matrixWorld); rc.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
+      const h = pick(); hover[i] = h;
+      c.userData.line.scale.z = h ? h.dist : 1.2;
+      cursors[i].visible = !!h;
+      if (h) cursors[i].position.copy(rc.ray.origin).addScaledVector(rc.ray.direction, h.dist);
+    }
+    hover[2] = null;
+  } else {
+    hover[0] = hover[1] = null; updateOrbit();
+    if (mouse.in && !drag) { rc.setFromCamera(mouse, camera); hover[2] = pick(); } else hover[2] = null;
+    cv.style.cursor = hover[2] ? 'pointer' : (drag ? 'grabbing' : 'grab');
+  }
+
+  // grinding
+  const st = STEPS[S.step];
+  const grindingNow = S.holding && st && st.id === 'grindBtn' && (S.mode === 'guided' || S.mode === 'test') && !S.busy;
+  if (grindingNow) {
+    S.grind = Math.min(1, S.grind + dt / 3); setGrind(S.grind); setG(grindG, 0.45);
+    pf.position.x = PF_GRIND.x + Math.sin(t * 60) * 0.0006;
+    if (S.grind >= 1) {
+      S.holding = false; setG(grindG, 0); pf.position.x = PF_GRIND.x; S.busy = true;
+      sleep(0.3).then(function () { advance(); S.busy = false; });
+    }
+  }
+
+  // brewing
+  if (S.brewing) {
+    S.brewT += dt * 2;
+    const f = Math.min(1, S.brewT / 40) * 0.9; setCupFill(f);
+    const top = T + 0.135, bottom = T + 0.03 + 0.006 + 0.05 * Math.max(f, 0.001);
+    stream.scale.y = Math.max(0.01, top - bottom);
+    S.gaugeV += (9 - S.gaugeV) * Math.min(1, dt * 3);
+    timerAcc += dt; if (timerAcc > 0.1) { timerAcc = 0; drawTimer(); drawGauge(S.gaugeV); }
+    if (S.brewT >= 45 && S.step === 8) finishShot(true);
+  }
+
+  // steam
+  if (S.steamOn) {
+    for (let i = 0; i < steam.length; i++) {
+      const s = steam[i], ph = (t * 0.22 + i / steam.length) % 1;
+      s.visible = true;
+      s.position.set(cup.position.x + Math.sin(i * 2.1 + t) * 0.012, cup.position.y + 0.07 + ph * 0.2, cup.position.z + Math.cos(i * 1.7 + t) * 0.01);
+      s.material.opacity = 0.32 * (1 - ph) * Math.min(1, ph * 6); s.scale.setScalar(0.04 + 0.07 * ph);
+    }
+  }
+
+  // glow / hover
+  const tid = currentTarget(), pulse = 0.25 + 0.25 * Math.sin(t * 5);
+  for (let i = 0; i < interactables.length; i++) {
+    const o = interactables[i], id = o.userData.id;
+    const hov = hover[0] && hover[0].id === id || hover[1] && hover[1].id === id || hover[2] && hover[2].id === id;
+    if (o.userData.ui) { o.scale.setScalar(hov ? 1.08 : 1); continue; }
+    if (hov) glow(o, gold, 0.55);
+    else if (S.mode === 'guided' && !S.busy && tid === id) glow(o, green, pulse);
+    else glow(o, 0, 0);
+  }
+
+  // panel + hud
+  if (S.dirty) { S.dirty = false; panel.redraw(); syncHud(); }
+}
+function syncHud() {
+  let a = '', b = '';
+  if (S.mode === 'menu') { a = 'Choose a mode to start.'; b = 'Guided = hints and new words. Test = no help.'; }
+  else if (S.mode === 'done') { a = 'Espresso ready! ' + '*'.repeat(S.stars) + ' (' + S.stars + '/3)'; b = 'Shot time ' + Math.round(S.shot) + ' s, mistakes ' + S.mistakes + '.'; }
+  else if (S.mode === 'test') { a = 'Test mode - no hints'; b = 'Mistakes: ' + S.mistakes; }
+  else if (STEPS[S.step]) { a = (S.step + 1) + '/' + STEPS.length + '  ' + STEPS[S.step].title; b = STEPS[S.step].text; }
+  $('hudStep').textContent = a; $('hudText').textContent = b;
+}
+
+renderer.setAnimationLoop(function (now) {
+  const t = now / 1000, dt = Math.min(0.1, last ? t - last : 0.016); last = t;
+  update(dt, t); renderer.render(scene, camera);
+});
+window.addEventListener('resize', function () {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+resetScene(); labels.forEach(l => { l.visible = false; });
+window.__espresso = { S: S, onPress: onPress, onRelease: onRelease, STEPS: STEPS, startMode: startMode };
+})();
+</script>
+</body>
+</html>
